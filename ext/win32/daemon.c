@@ -169,6 +169,8 @@ VALUE Ruby_Service_Ctrl(VALUE self){
 					// want to block Service_Ctrl longer than necessary and the
 					// critical section will block it.
 					VALUE EventHookHash = rb_ivar_get(self, rb_intern("@event_hooks"));
+					VALUE hook_threads = rb_ivar_get(self, rb_intern("@hook_threads"));
+					VALUE thread;
 
 					if (EventHookHash != Qnil){
 						VALUE val = rb_hash_aref(
@@ -176,8 +178,10 @@ VALUE Ruby_Service_Ctrl(VALUE self){
 							INT2NUM(waiting_control_code)
 							);
 
-						if (val != Qnil)
-							rb_thread_create(Service_Event_Dispatch, (void*)val);
+						if (val != Qnil) {
+							thread = rb_thread_create(Service_Event_Dispatch, (void*)val);
+							rb_ary_push(hook_threads, thread);
+						}
 					}
 				}
 				else{
@@ -201,12 +205,16 @@ VALUE Ruby_Service_Ctrl(VALUE self){
 	// Force service_stop call
   {
 	  VALUE EventHookHash = rb_ivar_get(self, rb_intern("@event_hooks"));
+	  VALUE hook_threads = rb_ivar_get(self, rb_intern("@hook_threads"));
+	  VALUE thread;
 
 	  if (EventHookHash != Qnil){
 		  VALUE val = rb_hash_aref(EventHookHash, INT2NUM(SERVICE_CONTROL_STOP));
 
-		  if (val != Qnil)
-			  rb_thread_create(Service_Event_Dispatch, (void*)val);
+		  if (val != Qnil) {
+			  thread = rb_thread_create(Service_Event_Dispatch, (void*)val);
+			  rb_ary_push(hook_threads, thread);
+		  }
 	  }
   }
 
@@ -327,20 +335,23 @@ static VALUE daemon_mainloop_protect(VALUE self)
 static VALUE daemon_mainloop_ensure(VALUE self)
 {
 	int i;
+	VALUE hook_threads = rb_ivar_get(self, rb_intern("@hook_threads"));
+	VALUE join_timeout = DBL2NUM(0.1);
 
 	// Signal both the ruby thread and service_main thread to terminate
 	SetEvent(hStopEvent);
 
 	// Wait for ALL ruby threads to exit
-	for (i = 1; TRUE; i++)
+	for (i = 1; RARRAY_LEN(hook_threads) > 0; i++)
 	{
-		VALUE list = rb_funcall(rb_cThread, rb_intern("list"), 0);
+		VALUE thread = RARRAY_PTR(hook_threads)[0];
+		VALUE result = rb_funcall(thread, rb_intern("join"), join_timeout);
 
-		if (RARRAY_LEN(list) <= 1)
-			break;
+		if (result!=Qnil)
+			rb_ary_shift(hook_threads);
 
 		// This is another ugly polling loop, be as polite as possible
-		rb_thread_polling();
+		// rb_thread_polling();
 
 		SetTheServiceStatus(SERVICE_STOP_PENDING, 0, i, 1000);
 	}
@@ -368,7 +379,7 @@ static VALUE daemon_mainloop(VALUE self)
 	DWORD ThreadId;
 	HANDLE events[2];
 	DWORD index;
-	VALUE result, EventHookHash;
+	VALUE result, EventHookHash, hook_threads;
 	int status = 0;
 
 	dwServiceState = 0;
@@ -389,6 +400,10 @@ static VALUE daemon_mainloop(VALUE self)
 	// at any ole time while running the service
 	EventHookHash = rb_hash_new();
 	rb_ivar_set(self, rb_intern("@event_hooks"), EventHookHash);
+
+	// Collect threads running hook callbacks in an array to be able to join them
+	hook_threads = rb_ary_new();
+	rb_ivar_set(self, rb_intern("@hook_threads"), hook_threads);
 
 	// Event hooks
 	if (rb_respond_to(self, rb_intern("service_stop"))){
