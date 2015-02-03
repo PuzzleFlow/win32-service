@@ -345,7 +345,7 @@ static VALUE daemon_mainloop_ensure(VALUE self)
 	for (i = 1; RARRAY_LEN(hook_threads) > 0; i++)
 	{
 		VALUE thread = RARRAY_PTR(hook_threads)[0];
-		VALUE result = rb_funcall(thread, rb_intern("join"), join_timeout);
+		VALUE result = rb_funcall(thread, rb_intern("join"), 1, join_timeout);
 
 		if (result!=Qnil)
 			rb_ary_shift(hook_threads);
@@ -379,7 +379,7 @@ static VALUE daemon_mainloop(VALUE self)
 	DWORD ThreadId;
 	HANDLE events[2];
 	DWORD index;
-	VALUE result, EventHookHash, hook_threads;
+	VALUE result, EventHookHash, hook_threads, ctrl_thread;
 	int status = 0;
 
 	dwServiceState = 0;
@@ -513,7 +513,8 @@ static VALUE daemon_mainloop(VALUE self)
 	// from this point onward, stopevent must be triggered!
 
 	// Create the green thread to poll for Service_Ctrl events
-	rb_thread_create(Ruby_Service_Ctrl, (void *)self);
+	ctrl_thread = rb_thread_create(Ruby_Service_Ctrl, (void *)self);
+	rb_ary_push(hook_threads, ctrl_thread);
 
 	result = rb_protect(daemon_mainloop_protect, self, &status);
 
